@@ -1,0 +1,724 @@
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { FilesetResolver, HandLandmarker, DrawingUtils } from '@mediapipe/tasks-vision';
+
+const CONFIG = {
+    colors: {
+        bg: 0x020205, gold: 0xffd700, red: 0x880000, green: 0x004400,
+        iceBlue: 0xaaddff,
+        iceCyan: 0x00ffff,
+        iceMagenta: 0xff00cc,
+        iceDeep: 0x002244,
+        white: 0xffffff,
+        barbieHot: 0xff1694,
+        barbieSoft: 0xffb7c5,
+        barbieViolet: 0xd461e3
+    },
+    particles: {
+        count: 1800, dustCount: 1500, treeHeight: 28, treeRadius: 9,
+        snowCount: 2500, snowSpeed: 10
+    },
+    camera: { z: 55 },
+    gestures: { palmOpenThreshold: 0.35, sensitivity: 6.0 }
+};
+
+const STATE = {
+    mode: 'TREE', focusTarget: null, currentPhotoIndex: -1,
+    currentThemeIndex: 0,
+    gestureDebounceTimer: 0,
+    isGestureSwitchEnabled: true,
+    scatterScale: 1.0, gestureBaseSpread: null,
+    hand: { detected: false, x: 0, y: 0 },
+    rotation: { x: 0, y: 0 }, spinVel: { x: 0, y: 0 }, time: 0,
+    wasPointing: false, palmCenter: { x: 0.5, y: 0.5 }, hasPalmCenter: false,
+    starMesh: null, starHaloMesh: null,
+    letterContent: "dear anhnguyetkiki,\nat this special moment, I wanna tell you\nthat you are the galaxy in my eyes!",
+    letterTyper: null, letterStartTimer: null, letterLastTriggerTime: 0,
+    musicData: null,
+};
+
+
+
+
+
+
+
+let scene, camera, renderer, composer, clock = new THREE.Clock();
+let mainGroup, starGroup, bgGroup, photoMeshGroup, particleSystem = [];
+let galaxySystem = null;
+let snowSystem = null;
+let heartSystem = null;
+
+let handLandmarker, video, drawingUtils, canvasCtx;
+let caneTexture, snowTexture, heartTexture, matLib = {};
+
+const _tempVec = new THREE.Vector3();
+const _targetVec = new THREE.Vector3();
+const _invMatrix = new THREE.Matrix4();
+
+async function init() {
+    initThree();
+    setupEnvironment();
+    setupLights();
+    createTextures();
+    createMaterials();
+
+    createGalaxyBackground();
+    createSnowBackground();
+    createHeartBackground();
+
+    createParticles();
+    setupPostProcessing();
+    setupLetterSystem();
+
+    switchTheme(0);
+
+    wuu();
+    initMediaPipe().catch(console.warn);
+
+    const loader = document.getElementById('loader');
+    loader.style.opacity = 0;
+    setTimeout(() => loader.remove(), 1200);
+
+    animate();
+}
+
+function initThree() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(CONFIG.colors.bg);
+    scene.fog = new THREE.FogExp2(CONFIG.colors.bg, 0.012);
+
+    camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 2000);
+    camera.position.set(0, 0, CONFIG.camera.z);
+
+    renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", depth: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+    bgGroup = new THREE.Group(); scene.add(bgGroup);
+    mainGroup = new THREE.Group(); mainGroup.rotation.x = 0.1; scene.add(mainGroup);
+    starGroup = new THREE.Group(); mainGroup.add(starGroup);
+    photoMeshGroup = new THREE.Group(); mainGroup.add(photoMeshGroup);
+}
+
+function setupEnvironment() {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    pmrem.compileEquirectangularShader();
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+}
+
+function setupLights() {
+    scene.add(new THREE.AmbientLight(0xffffff, 0.2));
+    const bottomLight = new THREE.PointLight(CONFIG.colors.gold, 3, 40);
+    bottomLight.position.set(0, -10, 10);
+    mainGroup.add(bottomLight);
+
+    const spotGold = new THREE.SpotLight(0xfff0dd, 800);
+    spotGold.position.set(40, 60, 40); spotGold.angle = 0.4; spotGold.decay = 2;
+    scene.add(spotGold);
+
+    const spotBlue = new THREE.SpotLight(0x4455ff, 400);
+    spotBlue.position.set(-40, 10, -30); spotBlue.lookAt(0, 0, 0);
+    scene.add(spotBlue);
+}
+
+function setupPostProcessing() {
+    const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+    bloom.threshold = 0.75; bloom.strength = 0.5; bloom.radius = 0.5;
+    composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    composer.addPass(bloom);
+}
+
+function createFrostTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256; canvas.height = 256;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#666'; ctx.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 80; i++) {
+        ctx.strokeStyle = `rgba(255,255,255,${0.2 + Math.random() * 0.5})`;
+        ctx.lineWidth = Math.random() * 2 + 0.5;
+        ctx.beginPath();
+        const x = Math.random() * 256, y = Math.random() * 256;
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + (Math.random() - 0.5) * 60, y + (Math.random() - 0.5) * 60);
+        ctx.stroke();
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
+    return tex;
+}
+
+function createTextures() {
+    const canvas = document.createElement('canvas'); canvas.width = 128; canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, 128, 128);
+    ctx.fillStyle = '#aa0000'; ctx.beginPath();
+    for (let i = -128; i < 256; i += 32) { ctx.moveTo(i, 0); ctx.lineTo(i + 32, 128); ctx.lineTo(i + 16, 128); ctx.lineTo(i - 16, 0); }
+    ctx.fill();
+    caneTexture = new THREE.CanvasTexture(canvas);
+    caneTexture.colorSpace = THREE.SRGBColorSpace;
+    caneTexture.wrapS = THREE.RepeatWrapping; caneTexture.wrapT = THREE.RepeatWrapping;
+    caneTexture.repeat.set(3, 3);
+
+    const snowCvs = document.createElement('canvas'); snowCvs.width = 32; snowCvs.height = 32;
+    const sCtx = snowCvs.getContext('2d');
+    const grad = sCtx.createRadialGradient(16, 16, 0, 16, 16, 16);
+    grad.addColorStop(0, 'rgba(255,255,255,1)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    sCtx.fillStyle = grad; sCtx.fillRect(0, 0, 32, 32);
+    snowTexture = new THREE.CanvasTexture(snowCvs);
+
+    const hCvs = document.createElement('canvas'); hCvs.width = 64; hCvs.height = 64;
+    const hCtx = hCvs.getContext('2d');
+    hCtx.fillStyle = '#ffffff';
+    hCtx.beginPath();
+    hCtx.moveTo(32, 20);
+    hCtx.bezierCurveTo(32, 17, 30, 10, 20, 10);
+    hCtx.bezierCurveTo(10, 10, 10, 25, 10, 25);
+    hCtx.bezierCurveTo(10, 35, 20, 42, 32, 55);
+    hCtx.bezierCurveTo(44, 42, 54, 35, 54, 25);
+    hCtx.bezierCurveTo(54, 25, 54, 10, 44, 10);
+    hCtx.bezierCurveTo(36, 10, 32, 17, 32, 20);
+    hCtx.fill();
+    heartTexture = new THREE.CanvasTexture(hCvs);
+}
+
+function createMaterials() {
+    matLib.gold = new THREE.MeshStandardMaterial({ color: CONFIG.colors.gold, metalness: 1.0, roughness: 0.15, envMapIntensity: 2.5, emissive: 0x664400, emissiveIntensity: 0.2 });
+    matLib.green = new THREE.MeshStandardMaterial({ color: CONFIG.colors.green, metalness: 0.4, roughness: 0.3, emissive: 0x001100, emissiveIntensity: 0.1 });
+    matLib.red = new THREE.MeshPhysicalMaterial({ color: CONFIG.colors.red, metalness: 0.6, roughness: 0.2, clearcoat: 1.0, emissive: 0x330000, emissiveIntensity: 0.4 });
+    matLib.candy = new THREE.MeshStandardMaterial({ map: caneTexture, roughness: 0.3, metalness: 0.1, emissive: 0x222222 });
+    matLib.starGold = new THREE.MeshStandardMaterial({ color: 0xffdd88, emissive: 0xffaa00, emissiveIntensity: 2.0, metalness: 1.0, roughness: 0 });
+    matLib.frameGold = new THREE.MeshStandardMaterial({ color: CONFIG.colors.gold, metalness: 1.0, roughness: 0.2 });
+
+    const frostTex = createFrostTexture();
+    matLib.ice = new THREE.MeshPhysicalMaterial({
+        color: 0xffffff, metalness: 0.1, roughness: 0.05,
+        transmission: 0.95, thickness: 1.5, ior: 1.8,
+        clearcoat: 1.0, envMapIntensity: 2.0,
+        iridescence: 1.0, iridescenceIOR: 1.3, iridescenceThicknessRange: [100, 400],
+        emissive: CONFIG.colors.iceBlue, emissiveIntensity: 0.3
+    });
+    matLib.frozenCyan = new THREE.MeshPhysicalMaterial({
+        color: CONFIG.colors.iceCyan, metalness: 0.8, roughness: 0.2,
+        emissive: CONFIG.colors.iceCyan, emissiveIntensity: 2.0,
+        clearcoat: 1.0
+    });
+    matLib.frozenMagenta = new THREE.MeshPhysicalMaterial({
+        color: CONFIG.colors.iceMagenta, metalness: 0.5, roughness: 0.2,
+        emissive: CONFIG.colors.iceMagenta, emissiveIntensity: 1.5,
+        clearcoat: 1.0
+    });
+    matLib.starIce = new THREE.MeshPhysicalMaterial({
+        color: CONFIG.colors.iceCyan, emissive: 0xffffff, emissiveIntensity: 3.0,
+        metalness: 0.2, roughness: 0, transmission: 0.6, thickness: 3.0
+    });
+    matLib.snow = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.1, roughness: 0.8, emissive: 0xaaaaaa, emissiveIntensity: 0.8 });
+
+    matLib.barbieMain = new THREE.MeshPhysicalMaterial({ color: CONFIG.colors.barbieHot, metalness: 0.2, roughness: 0.1, clearcoat: 1.0, emissive: 0x440022, emissiveIntensity: 0.3 });
+    matLib.barbieSoft = new THREE.MeshStandardMaterial({ color: CONFIG.colors.barbieSoft, metalness: 0.1, roughness: 0.4, emissive: 0x442233, emissiveIntensity: 0.2 });
+    matLib.pearl = new THREE.MeshPhysicalMaterial({ color: 0xffffff, metalness: 0.9, roughness: 0.1, transmission: 0.1, clearcoat: 1.0, iridescence: 1.0, iridescenceIOR: 1.3 });
+    matLib.starBarbie = new THREE.MeshStandardMaterial({ color: CONFIG.colors.barbieHot, emissive: 0xff0088, emissiveIntensity: 4.0, metalness: 0.5, roughness: 0.1 });
+    matLib.frameBarbie = matLib.barbieMain;
+
+    matLib.snowBorder = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, side: THREE.BackSide });
+    matLib.frameIce = matLib.ice;
+    matLib.dust = new THREE.MeshBasicMaterial({ color: 0xffffee, blending: THREE.AdditiveBlending });
+    matLib.snowFlake = new THREE.PointsMaterial({ color: 0xffffff, size: 0.8, map: snowTexture, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false });
+    matLib.heartFlake = new THREE.PointsMaterial({ color: CONFIG.colors.barbieHot, size: 1.5, map: heartTexture, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false });
+}
+
+class Particle {
+    constructor(mesh, type, isDust = false) {
+        this.mesh = mesh; this.type = type; this.isDust = isDust;
+        this.posTree = new THREE.Vector3(); this.posScatter = new THREE.Vector3();
+        this.baseScale = mesh.scale.x; this.offset = Math.random() * 100; this.speed = 0.5 + Math.random();
+        if (mesh.material && mesh.material.emissive) { this.baseEmissive = mesh.material.emissive.clone(); this.hasEmissive = true; }
+        this.calculatePositions();
+    }
+
+    calculatePositions() {
+        const h = CONFIG.particles.treeHeight; let t = Math.random();
+        if (Math.random() > 0.7 && !this.isDust && this.type !== 'PHOTO') {
+            const y = (t * h) - h / 2, angle = t * Math.PI * 12, rBase = CONFIG.particles.treeRadius * (1.0 - t);
+            this.posTree.set(Math.cos(angle) * rBase, y, Math.sin(angle) * rBase);
+        } else {
+            t = Math.pow(t, 0.8); const y = (t * h) - h / 2, angle = Math.random() * Math.PI * 2, r = Math.max(0.5, CONFIG.particles.treeRadius * (1.0 - t)) * Math.sqrt(Math.random());
+            this.posTree.set(Math.cos(angle) * r, y, Math.sin(angle) * r);
+        }
+        const rScatter = this.isDust ? (15 + Math.random() * 25) : (10 + Math.random() * 15);
+        const theta = Math.random() * Math.PI * 2, phi = Math.acos(2 * Math.random() - 1);
+        this.posScatter.set(rScatter * Math.sin(phi) * Math.cos(theta), rScatter * Math.sin(phi) * Math.sin(theta), rScatter * Math.cos(phi));
+    }
+
+    update(dt, time, mode, focusTargetMesh, invMatrix) {
+        let target, s = this.baseScale, lerpSpeed = 3.0;
+
+        if (mode === 'SCATTER') {
+            _targetVec.copy(this.posScatter).multiplyScalar(STATE.scatterScale);
+            target = _targetVec;
+        }
+        else if (mode === 'LETTER') target = this.posScatter;
+        else if (mode === 'FOCUS') {
+            if (this.mesh === focusTargetMesh && invMatrix) {
+                _targetVec.set(0, 0, CONFIG.camera.z - 15).applyMatrix4(invMatrix);
+                target = _targetVec;
+                lerpSpeed = 6.0; this.mesh.lookAt(camera.position); s = this.baseScale * 5.0;
+            } else { target = this.posScatter; s = 0.01; }
+        } else {
+            target = this.posTree;
+        }
+
+        _tempVec.copy(target);
+        if (mode === 'TREE') {
+            const floatScale = (STATE.currentThemeIndex === 1) ? 0.3 : 0.15;
+            _tempVec.y += Math.sin(time * this.speed + this.offset) * floatScale;
+            _tempVec.x += Math.cos(time * 0.5 * this.speed + this.offset) * 0.1;
+        }
+        this.mesh.position.lerp(_tempVec, lerpSpeed * dt);
+
+        if (this.hasEmissive && mode === 'TREE' && !this.isDust) {
+            const blink = Math.sin(time * 2 + this.offset);
+            const maxEmit = (STATE.currentThemeIndex === 1) ? 3.0 : 2.5;
+            this.mesh.material.emissiveIntensity = blink > 0.5 ? (1.0 + (blink - 0.5) * maxEmit) : 0.4;
+        }
+
+        if (mode !== 'FOCUS') {
+            if (this.isDust) s = this.baseScale * (0.5 + 0.5 * Math.sin(time * 3 + this.offset));
+            else if ((mode === 'SCATTER' || mode === 'LETTER') && this.type === 'PHOTO') s = this.baseScale * 2.5;
+
+            if (STATE.currentThemeIndex === 1 && mode === 'TREE' && !this.isDust && this.type !== 'PHOTO') {
+                s *= (1.0 + 0.2 * Math.sin(time * 3 + this.offset));
+            }
+        }
+        this.mesh.scale.lerp(_tempVec.set(s, s, s), 5 * dt);
+    }
+}
+
+function createGalaxyBackground() {
+    const geometry = new THREE.BufferGeometry(), count = 3000;
+    const pos = new Float32Array(count * 3), sizes = new Float32Array(count), colors = new Float32Array(count * 3);
+    const c1 = new THREE.Color(0x88aaff), c2 = new THREE.Color(0xffffee), c3 = new THREE.Color(0xffd700);
+    for (let i = 0; i < count; i++) {
+        const r = 60 + Math.random() * 250, theta = Math.random() * Math.PI * 2, phi = Math.acos(2 * Math.random() - 1);
+        pos[i * 3] = r * Math.sin(phi) * Math.cos(theta); pos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta); pos[i * 3 + 2] = r * Math.cos(phi);
+        sizes[i] = Math.random() * 2.0;
+        let c = Math.random(), finalC = c < 0.6 ? c2 : (c < 0.9 ? c1 : c3);
+        colors[i * 3] = finalC.r; colors[i * 3 + 1] = finalC.g; colors[i * 3 + 2] = finalC.b;
+    }
+    geometry.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    galaxySystem = new THREE.Points(geometry, new THREE.PointsMaterial({ size: 1.0, transparent: true, opacity: 0.8, vertexColors: true, sizeAttenuation: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+    bgGroup.add(galaxySystem);
+}
+
+function createSnowBackground() {
+    const geometry = new THREE.BufferGeometry();
+    const count = CONFIG.particles.snowCount;
+    const pos = new Float32Array(count * 3);
+    const velocities = new Float32Array(count);
+
+    for (let i = 0; i < count; i++) {
+        pos[i * 3] = (Math.random() - 0.5) * 100;
+        pos[i * 3 + 1] = (Math.random() - 0.5) * 100;
+        pos[i * 3 + 2] = (Math.random() - 0.5) * 60;
+        velocities[i] = 1.0 + Math.random();
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geometry.setAttribute('velocity', new THREE.BufferAttribute(velocities, 1));
+
+    snowSystem = new THREE.Points(geometry, matLib.snowFlake);
+    snowSystem.visible = false;
+    bgGroup.add(snowSystem);
+}
+
+function createHeartBackground() {
+    const geometry = new THREE.BufferGeometry();
+    const count = 1500;
+    const pos = new Float32Array(count * 3);
+    const velocities = new Float32Array(count);
+    const colors = new Float32Array(count * 3);
+    const c1 = new THREE.Color(CONFIG.colors.barbieHot);
+    const c2 = new THREE.Color(CONFIG.colors.barbieSoft);
+    const c3 = new THREE.Color(0xffffff);
+
+    for (let i = 0; i < count; i++) {
+        pos[i * 3] = (Math.random() - 0.5) * 120;
+        pos[i * 3 + 1] = (Math.random() - 0.5) * 120;
+        pos[i * 3 + 2] = (Math.random() - 0.5) * 80;
+        velocities[i] = 0.5 + Math.random() * 0.8;
+        let c = Math.random();
+        let finalC = c < 0.4 ? c1 : (c < 0.7 ? c2 : c3);
+        colors[i * 3] = finalC.r; colors[i * 3 + 1] = finalC.g; colors[i * 3 + 2] = finalC.b;
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geometry.setAttribute('velocity', new THREE.BufferAttribute(velocities, 1));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const mat = matLib.heartFlake.clone();
+    mat.vertexColors = true;
+    heartSystem = new THREE.Points(geometry, mat);
+    heartSystem.visible = false;
+    bgGroup.add(heartSystem);
+}
+
+function createParticles() {
+    const sphereGeo = new THREE.SphereGeometry(0.5, 16, 16), boxGeo = new THREE.BoxGeometry(0.45, 0.45, 0.45);
+    const curve = new THREE.CatmullRomCurve3([new THREE.Vector3(0, -0.5, 0), new THREE.Vector3(0, 0.3, 0), new THREE.Vector3(0.1, 0.5, 0), new THREE.Vector3(0.3, 0.4, 0)]);
+    const candyGeo = new THREE.TubeGeometry(curve, 8, 0.08, 6, false), dustGeo = new THREE.OctahedronGeometry(0.1, 0);
+
+    for (let i = 0; i < CONFIG.particles.count; i++) {
+        const rand = Math.random(); let mesh, type;
+        if (rand < 0.35) { mesh = new THREE.Mesh(boxGeo, matLib.green); type = 'BOX'; }
+        else if (rand < 0.70) { mesh = new THREE.Mesh(boxGeo, matLib.gold); type = 'GOLD_BOX'; }
+        else if (rand < 0.90) { mesh = new THREE.Mesh(sphereGeo, matLib.gold); type = 'GOLD_SPHERE'; }
+        else if (rand < 0.96) { mesh = new THREE.Mesh(sphereGeo, matLib.red); type = 'RED'; }
+        else { mesh = new THREE.Mesh(candyGeo, matLib.candy); type = 'CANE'; }
+        const s = 0.4 + Math.random() * 0.4; mesh.scale.set(s, s, s);
+        mesh.rotation.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
+        mainGroup.add(mesh); particleSystem.push(new Particle(mesh, type, false));
+    }
+    for (let i = 0; i < CONFIG.particles.dustCount; i++) {
+        const mesh = new THREE.Mesh(dustGeo, matLib.dust); mesh.scale.setScalar(0.5 + Math.random());
+        mainGroup.add(mesh); particleSystem.push(new Particle(mesh, 'DUST', true));
+    }
+    createStarTopper();
+}
+
+function createStarTopper() {
+    const star = new THREE.Mesh(new THREE.OctahedronGeometry(1.5, 0), matLib.starGold);
+    star.position.set(0, CONFIG.particles.treeHeight / 2 + 1.2, 0);
+    const halo = new THREE.Mesh(new THREE.PlaneGeometry(8, 8), new THREE.MeshBasicMaterial({
+        map: new THREE.TextureLoader().load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/sprites/glow.png'),
+        blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.5, color: 0xffaa00
+    }));
+    star.add(halo); starGroup.add(star);
+    STATE.starMesh = star; STATE.starHaloMesh = halo;
+}
+
+function switchTheme(themeIndex) {
+    STATE.currentThemeIndex = themeIndex;
+
+    const titleEl = document.getElementById('main-title');
+    if (titleEl) {
+        if (themeIndex === 0) {
+            titleEl.style.color = '#d4af37';
+            titleEl.style.textShadow = '0 0 15px rgba(212, 175, 55, 0.4), 0 0 30px rgba(212, 175, 55, 0.2)';
+        } else if (themeIndex === 1) {
+            titleEl.style.color = '#e0ffff';
+            titleEl.style.textShadow = '0 0 15px rgba(0, 255, 255, 0.6), 0 0 30px rgba(0, 255, 255, 0.4), 0 0 45px rgba(170, 221, 255, 0.3)';
+        } else if (themeIndex === 2) {
+            titleEl.style.color = '#ff69b4';
+            titleEl.style.textShadow = '0 0 15px rgba(255, 22, 148, 0.6), 0 0 30px rgba(255, 183, 197, 0.4)';
+        }
+    }
+
+    renderer.toneMappingExposure = (themeIndex === 1) ? 1.2 : (themeIndex === 2 ? 0.9 : 1.0);
+
+    if (galaxySystem) galaxySystem.visible = (themeIndex === 0);
+    if (snowSystem) snowSystem.visible = (themeIndex === 1);
+    if (heartSystem) heartSystem.visible = (themeIndex === 2);
+
+    const fogColor = (themeIndex === 2) ? 0x1a0510 : ((themeIndex === 1) ? 0x000510 : CONFIG.colors.bg);
+    scene.fog.color.setHex(fogColor);
+    scene.background.setHex(fogColor);
+
+    particleSystem.forEach(p => {
+        if (p.isDust) {
+            if (themeIndex === 2) p.mesh.material.color.setHex(CONFIG.colors.barbieSoft);
+            else if (themeIndex === 1) p.mesh.material.color.setHex(CONFIG.colors.iceCyan);
+            else p.mesh.material.color.setHex(0xffffee);
+            return;
+        }
+
+        if (p.type === 'PHOTO') {
+            const group = p.mesh;
+            let frameMat;
+            if (themeIndex === 0) frameMat = matLib.frameGold;
+            else if (themeIndex === 1) frameMat = matLib.frameIce;
+            else frameMat = matLib.frameBarbie;
+
+            if (group.children[0]) group.children[0].material = frameMat;
+            if (group.children[2]) group.children[2].visible = (themeIndex !== 0);
+            return;
+        }
+
+        let newMat;
+        if (themeIndex === 0) {
+            if (p.type.includes('GOLD')) newMat = matLib.gold;
+            else if (p.type === 'BOX') newMat = matLib.green;
+            else if (p.type === 'RED') newMat = matLib.red;
+            else if (p.type === 'CANE') newMat = matLib.candy;
+        } else if (themeIndex === 1) {
+            if (p.type === 'GOLD_SPHERE') newMat = matLib.frozenCyan;
+            else if (p.type === 'GOLD_BOX' || p.type === 'BOX') newMat = matLib.ice;
+            else if (p.type === 'RED') newMat = matLib.frozenMagenta;
+            else if (p.type === 'CANE') newMat = matLib.snow;
+        } else if (themeIndex === 2) {
+            if (p.type.includes('GOLD')) newMat = matLib.barbieMain;
+            else if (p.type === 'BOX') newMat = matLib.barbieSoft;
+            else if (p.type === 'RED') newMat = matLib.pearl;
+            else if (p.type === 'CANE') newMat = matLib.barbieMain;
+        }
+
+        if (newMat) p.mesh.material = newMat;
+    });
+
+    if (STATE.starMesh && STATE.starHaloMesh) {
+        if (themeIndex === 0) {
+            STATE.starMesh.material = matLib.starGold;
+            STATE.starHaloMesh.material.color.setHex(0xffaa00);
+        } else if (themeIndex === 1) {
+            STATE.starMesh.material = matLib.starIce;
+            STATE.starHaloMesh.material.color.setHex(CONFIG.colors.iceCyan);
+        } else {
+            STATE.starMesh.material = matLib.starBarbie;
+            STATE.starHaloMesh.material.color.setHex(CONFIG.colors.barbieHot);
+        }
+    }
+}
+
+function addPhotoToScene(texture) {
+    if (!texture.image) return;
+    const aspect = texture.image.width / texture.image.height;
+    let photoW = (aspect >= 1) ? 1.2 : 1.2 * aspect, photoH = (aspect >= 1) ? 1.2 / aspect : 1.2;
+
+    const group = new THREE.Group();
+    const frameGeo = new THREE.BoxGeometry(photoW + 0.15, photoH + 0.15, 0.1);
+
+    let currentFrameMat;
+    if (STATE.currentThemeIndex === 0) currentFrameMat = matLib.frameGold;
+    else if (STATE.currentThemeIndex === 1) currentFrameMat = matLib.frameIce;
+    else currentFrameMat = matLib.frameBarbie;
+
+    const frame = new THREE.Mesh(frameGeo, currentFrameMat);
+    group.add(frame);
+
+    const photo = new THREE.Mesh(new THREE.PlaneGeometry(photoW, photoH), new THREE.MeshBasicMaterial({ map: texture }));
+    photo.position.z = 0.06; group.add(photo);
+
+    const borderGeo = new THREE.BoxGeometry(photoW + 0.25, photoH + 0.25, 0.08);
+    const border = new THREE.Mesh(borderGeo, matLib.snowBorder);
+    border.position.z = -0.02; border.visible = (STATE.currentThemeIndex !== 0);
+    group.add(border);
+
+    photoMeshGroup.add(group); particleSystem.push(new Particle(group, 'PHOTO', false));
+}
+
+
+
+function setupLetterSystem() {
+    document.getElementById('btn-close-letter-mode').onclick = (e) => { e.stopPropagation(); exitLetterMode(); };
+}
+
+function enterLetterMode() {
+    if (STATE.mode === 'LETTER') return;
+    STATE.mode = 'LETTER';
+    const overlay = document.getElementById('letter-overlay'), paper = document.querySelector('.letter-paper'), display = document.getElementById('letter-content-display');
+    overlay.style.display = 'flex'; requestAnimationFrame(() => { overlay.style.opacity = 1; paper.style.transform = 'translateY(0)'; });
+    display.textContent = ''; display.classList.remove('cursor');
+
+    let i = 0;
+    const typeWriter = () => {
+        if (STATE.mode !== 'LETTER') return;
+        if (i < STATE.letterContent.length) { display.textContent += STATE.letterContent.charAt(i++); display.scrollTop = display.scrollHeight; STATE.letterTyper = setTimeout(typeWriter, 100); }
+        else display.classList.remove('cursor');
+    };
+    STATE.letterStartTimer = setTimeout(() => { if (STATE.mode === 'LETTER') { display.classList.add('cursor'); typeWriter(); } }, 1000);
+}
+
+function exitLetterMode() {
+    STATE.mode = 'TREE'; clearTimeout(STATE.letterTyper); clearTimeout(STATE.letterStartTimer);
+    const overlay = document.getElementById('letter-overlay'), paper = document.querySelector('.letter-paper');
+    overlay.style.opacity = 0; paper.style.transform = 'translateY(20px)';
+    setTimeout(() => { overlay.style.display = 'none'; }, 500);
+    STATE.spinVel.set(0, 0);
+}
+
+async function initMediaPipe() {
+    const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+    handLandmarker = await HandLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" }, runningMode: "VIDEO", numHands: 1 });
+    video = document.getElementById('webcam');
+
+    if (navigator.mediaDevices?.getUserMedia) {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } } });
+        video.srcObject = stream;
+        video.addEventListener("loadeddata", () => {
+            video.play();
+            predictWebcam();
+        });
+    }
+}
+
+let lastVideoTime = -1;
+async function predictWebcam() {
+    if (lastVideoTime !== video.currentTime && handLandmarker) {
+        lastVideoTime = video.currentTime;
+        const result = handLandmarker.detectForVideo(video, performance.now());
+        if (result.landmarks?.[0]) {
+            processGestures(result.landmarks[0]);
+        } else STATE.hand.detected = false;
+    }
+    requestAnimationFrame(predictWebcam);
+}
+
+function processGestures(lm) {
+    STATE.hand.detected = true;
+    if (STATE.mode === 'LETTER') return;
+
+    const dist = (i, j) => Math.hypot(lm[i].x - lm[j].x, lm[i].y - lm[j].y);
+    const dIndex = dist(8, 0), dMiddle = dist(12, 0), dRing = dist(16, 0), dPinky = dist(20, 0);
+    const palmSize = dist(0, 9);
+
+    if (dist(4, 8) < 0.05 && dMiddle > 0.15 && dMiddle > dIndex * 1.2) {
+        if (Date.now() - STATE.letterLastTriggerTime > 1000) { STATE.letterLastTriggerTime = Date.now(); enterLetterMode(); }
+        return;
+    }
+
+    const areFourFingersOpen = (dIndex > palmSize * 1.3) &&
+        (dMiddle > palmSize * 1.3) &&
+        (dRing > palmSize * 1.3) &&
+        (dPinky > palmSize * 1.3);
+    const isThumbTucked = dist(4, 9) < palmSize * 0.6;
+    const isOldSwitchGesture = areFourFingersOpen && isThumbTucked;
+
+    const isThumbExtended = dist(4, 9) > palmSize * 0.85;
+    const isIndexCurled = dist(8, 9) < palmSize * 0.65;
+    const isMiddleCurled = dist(12, 9) < palmSize * 0.65;
+    const isRingCurled = dist(16, 9) < palmSize * 0.65;
+    const isPinkyCurled = dist(20, 9) < palmSize * 0.65;
+
+    const isThumbsUpGesture = isThumbExtended && isIndexCurled && isMiddleCurled && isRingCurled && isPinkyCurled;
+
+    if (isOldSwitchGesture || isThumbsUpGesture) {
+        if (STATE.isGestureSwitchEnabled) {
+            if (Date.now() - STATE.gestureDebounceTimer > 2000) {
+                switchTheme((STATE.currentThemeIndex + 1) % 3);
+                STATE.gestureDebounceTimer = Date.now();
+            }
+        }
+    }
+
+    const isPointing = dIndex > 0.1 && dMiddle < dIndex * 0.7 && dRing < dIndex * 0.7;
+    const avgSpread = (dIndex + dMiddle + dRing + dPinky) / 4, isPalmOpen = avgSpread > CONFIG.gestures.palmOpenThreshold;
+
+    if (isPointing) {
+        STATE.mode = 'FOCUS';
+        if (!STATE.wasPointing) {
+            const photos = particleSystem.filter(p => p.type === 'PHOTO');
+            STATE.focusTarget = photos.length ? photos[(++STATE.currentPhotoIndex) % photos.length].mesh : STATE.starMesh;
+        }
+        STATE.wasPointing = true; STATE.hasPalmCenter = false; STATE.spinVel.x *= 0.9; STATE.spinVel.y *= 0.9;
+    } else {
+        STATE.wasPointing = false;
+        if (isPalmOpen) {
+            if (STATE.mode !== 'SCATTER' || !STATE.hasPalmCenter) {
+                STATE.palmCenter = { x: lm[9].x, y: lm[9].y }; STATE.hasPalmCenter = true; STATE.gestureBaseSpread = avgSpread; STATE.scatterScale = 1.0;
+            }
+            STATE.mode = 'SCATTER';
+            if (STATE.gestureBaseSpread) STATE.scatterScale += (THREE.MathUtils.clamp(Math.pow(STATE.gestureBaseSpread / avgSpread, 2), 0.1, 5.0) - STATE.scatterScale) * 0.15;
+            const gain = CONFIG.gestures.sensitivity, dx = lm[9].x - STATE.palmCenter.x, dy = lm[9].y - STATE.palmCenter.y;
+            STATE.spinVel.x += (THREE.MathUtils.clamp(-dy * gain, -3, 3) - STATE.spinVel.x) * 0.2;
+            STATE.spinVel.y += (THREE.MathUtils.clamp(dx * gain, -3, 3) - STATE.spinVel.y) * 0.2;
+        } else {
+            STATE.mode = 'TREE'; STATE.hasPalmCenter = false; STATE.scatterScale = 1.0; STATE.spinVel.x *= 0.9; STATE.spinVel.y *= 0.9;
+        }
+    }
+
+    if (STATE.mode !== 'FOCUS') {
+        STATE.hand.x += ((lm[9].x - 0.5) * 3.0 - STATE.hand.x) * 0.1;
+        STATE.hand.y += ((lm[9].y - 0.5) * 3.0 - STATE.hand.y) * 0.1;
+    }
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    const dt = clock.getDelta(); STATE.time = clock.elapsedTime;
+    const inputX = STATE.hand.detected ? STATE.hand.x : 0;
+
+    if (STATE.mode === 'LETTER') {
+        STATE.rotation.x = THREE.MathUtils.lerp(STATE.rotation.x, Math.PI / 4, dt * 1.5); STATE.rotation.y -= 0.1 * dt;
+    } else if (STATE.mode === 'TREE') {
+        const baseSpeed = (STATE.currentThemeIndex === 1) ? 0.6 : 0.4;
+        STATE.rotation.y -= baseSpeed * dt;
+        STATE.rotation.x = THREE.MathUtils.lerp(STATE.rotation.x, 0.15, dt * 2.0);
+        mainGroup.rotation.z = THREE.MathUtils.lerp(mainGroup.rotation.z, inputX * 0.1, dt * 2);
+    } else if (STATE.mode === 'SCATTER') {
+        STATE.rotation.y += STATE.spinVel.y * dt; STATE.rotation.x += STATE.spinVel.x * dt;
+        if (!STATE.hand.detected) { STATE.spinVel.x *= 0.95; STATE.spinVel.y *= 0.95; }
+    } else if (STATE.mode === 'FOCUS') {
+        _invMatrix.copy(mainGroup.matrixWorld).invert();
+    }
+
+    mainGroup.rotation.y = STATE.rotation.y; mainGroup.rotation.x = STATE.rotation.x;
+
+    if (galaxySystem && galaxySystem.visible) {
+        bgGroup.rotation.y -= 0.05 * dt;
+    } else if ((snowSystem && snowSystem.visible) || (heartSystem && heartSystem.visible)) {
+        const sys = snowSystem.visible ? snowSystem : heartSystem;
+        const positions = sys.geometry.attributes.position.array;
+        const velocities = sys.geometry.attributes.velocity.array;
+        const count = (snowSystem.visible) ? CONFIG.particles.snowCount : 1500;
+
+        for (let i = 0; i < count; i++) {
+            positions[i * 3 + 1] -= CONFIG.particles.snowSpeed * velocities[i] * dt;
+            if (positions[i * 3 + 1] < -50) {
+                positions[i * 3 + 1] = 50;
+            }
+        }
+        sys.geometry.attributes.position.needsUpdate = true;
+        bgGroup.rotation.y -= 0.02 * dt;
+    }
+
+    if (STATE.starMesh) {
+        STATE.starMesh.rotation.y -= dt; STATE.starMesh.rotation.z = Math.sin(STATE.time) * 0.2;
+        STATE.starMesh.scale.setScalar(1.0 + Math.sin(STATE.time * 2) * 0.1);
+    }
+
+    particleSystem.forEach(p => p.update(dt, STATE.time, STATE.mode, STATE.focusTarget, (STATE.mode === 'FOCUS' ? _invMatrix : null)));
+    composer.render();
+}
+
+const loader = new THREE.TextureLoader();
+const _0xZZZ = ['Li9hc3NldHMvaW1hZ2VzL2ltYWdlMS5qcGc=', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMi5qcGc=', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMy5qcGc=', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlNC5qcGc=', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlNS5qcGc=', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlNi5qcGc=', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlNy5qcGc=', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlOC5qcGc=', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlOS5qcGc=', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMTAuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMTEuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMTIuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMTMuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMTQuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMTUuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMTYuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMTcuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMTguanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMTkuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMjAuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMjEuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMjIuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMjMuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMjQuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMjUuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMjYuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMjcuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMjguanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMjkuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMzAuanBn', 'Li9hc3NldHMvaW1hZ2VzL2ltYWdlMzEuanBn'];
+const _0xTTT = 'Li9hc3NldHMvYXVkaW9zL2JnbS5tcDM=';
+
+function wuu() {
+    _0xZZZ.forEach((jj) => {
+        try {
+            const pp = atob(jj);
+            loader.load(pp, (texture) => {
+                texture.colorSpace = THREE.SRGBColorSpace;
+                addPhotoToScene(texture);
+            });
+        }
+        catch (e) { }
+    });
+
+
+
+    const anhnq204 = document.getElementById('anhnq204');
+    let oo = atob(_0xTTT);
+    const vv = new Audio(oo);
+    vv.loop = true;
+    vv.volume = 0.65;
+    anhnq204.addEventListener('click', () => {
+        vv.play();
+    });
+
+}
+
+
+
+
+init();

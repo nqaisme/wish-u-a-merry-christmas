@@ -1,0 +1,260 @@
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;800&family=Ma+Shan+Zheng&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Great+Vibes&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
+
+body {
+    margin: 0;
+    overflow: hidden;
+    background-color: #020205;
+    font-family: 'Great Vibes', serif;
+    font-style: italic;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+#canvas-container {
+    width: 100vw;
+    height: 100vh;
+    position: absolute;
+    z-index: 1;
+}
+
+#ui-layer {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    pointer-events: none;
+    background: radial-gradient(circle at center, transparent 0%, rgba(0, 0, 0, 0.3) 100%);
+}
+
+#main-title {
+    position: absolute;
+    top: 3%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 100%;
+    text-align: center;
+    font-family: 'Great Vibes', serif;
+    font-weight: 800;
+    font-size: clamp(36px, 2.5vw, 80px);
+    letter-spacing: 0.15em;
+    pointer-events: none;
+    z-index: 20;
+    opacity: 0;
+    min-height: 1.2em;
+
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-image: linear-gradient(180deg, #fffdf0 0%, #eacda3 30%, #d6ae7b 60%, #8b6c42 100%);
+    filter: drop-shadow(0 0 15px rgba(212, 175, 55, 0.6));
+
+    animation: titleFadeIn 2s ease-out forwards 1s;
+    transition: filter 1.5s ease, background-image 1.5s ease;
+}
+
+@keyframes titleFadeIn {
+    from {
+        opacity: 0;
+        transform: translate(-50%, -20px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translate(-50%, 0);
+    }
+}
+
+#loader {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    background: #000;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 1.2s;
+    pointer-events: none;
+}
+
+.spinner {
+    width: 40px;
+    height: 40px;
+    border: 2px solid rgba(212, 175, 55, 0.1);
+    border-top: 2px solid #d4af37;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+#top-right-controls {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    z-index: 30;
+    display: flex;
+    flex-direction: row;
+    gap: 15px;
+    pointer-events: auto;
+}
+
+.control-col {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.control-btn {
+    background: rgba(10, 10, 10, 0.6);
+    border: 1px solid rgba(212, 175, 55, 0.4);
+    color: #d4af37;
+    width: 100px;
+    padding: 5px 0;
+    border-radius: 7px;
+    font-family: 'Great Vibes', serif;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    backdrop-filter: blur(5px);
+    transition: all 0.3s ease;
+}
+
+.control-btn:hover {
+    background: rgba(212, 175, 55, 0.2);
+    border-color: rgba(212, 175, 55, 0.8);
+    color: #fff;
+    transform: scale(1.05);
+}
+
+.control-btn:active {
+    transform: scale(0.95);
+}
+
+.control-btn.disabled {
+    color: #666;
+    border-color: #444;
+}
+
+#file-input,
+#music-input,
+#import-input {
+    display: none;
+}
+
+#webcam-wrapper {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    opacity: 0;
+    pointer-events: none;
+    border: 1px solid rgba(212, 175, 55, 0.5);
+    border-radius: 4px;
+    background: #000;
+    z-index: 50;
+    display: flex;
+    transition: opacity 0.5s;
+}
+
+#webcam {
+    display: none;
+}
+
+
+
+.modal-btn-group {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+#letter-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 150;
+    background: rgba(0, 0, 0, 0.4);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+    opacity: 0;
+    transition: opacity 1.5s ease;
+}
+
+.letter-paper {
+    height: 80%;
+    aspect-ratio: 3/4;
+    background: rgba(255, 252, 240, 0.15);
+    backdrop-filter: blur(3px);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    padding: 6vh;
+    box-sizing: border-box;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    transform: translateY(20px);
+    transition: transform 1.5s ease-out;
+}
+
+.letter-content {
+    font-family: 'Ma Shan Zheng', cursive;
+    font-size: clamp(16px, 2.5vh, 24px);
+    line-height: 1.8;
+    color: rgba(255, 255, 255, 0.9);
+    text-shadow: 0 0 5px rgba(255, 215, 0, 0.3);
+    white-space: pre-wrap;
+    overflow-y: auto;
+    flex: 1;
+    scroll-behavior: smooth;
+}
+
+.letter-content::-webkit-scrollbar {
+    width: 6px;
+}
+
+.letter-content::-webkit-scrollbar-thumb {
+    background: rgba(212, 175, 55, 0.3);
+    border-radius: 3px;
+}
+
+.cursor::after {
+    content: '|';
+    animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+    50% {
+        opacity: 0;
+    }
+}
+
+.letter-close-btn {
+    position: absolute;
+    top: 15px;
+    right: 15px;
+    width: 30px;
+    height: 30px;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    border-radius: 50%;
+    color: rgba(255, 255, 255, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.letter-close-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+    border-color: #fff;
+}
